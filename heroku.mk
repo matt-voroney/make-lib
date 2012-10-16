@@ -13,7 +13,7 @@ PATH := $(PATH):$(DEPDIR)/bin:$(DEPDIR)/sbin
 INSTALLDIR := /tmp/vendor
 LOGDIR := /tmp/log
 S3_BIN := $(DEPDIR)/bin/s3
-LIB_SRC_SUFFIX = $(foreach sfx,.tar.gz .tgz .bz2 .xz,$(if $(filter %$(sfx),$(LIB_URL)),$(sfx),))
+LIB_SRC_SUFFIX := $(filter-out $(LIB_URL),$(foreach sfx,.tar.gz .tgz .bz2 .xz,$(patsubst %$(sfx),$(sfx),$(LIB_URL))))
 
 export CPATH := $(CPATH):$(DEPDIR)/include
 export LIBRARY_PATH := $(LIBRARY_PATH):$(DEPDIR)/lib
@@ -94,7 +94,7 @@ config: depend $(LIBNAME)-src
 	$(CONFIGURE) > $(LOGDIR)/configure.out
 
 build: config $(LIBNAME)-src
-	$(BUILD) > $(LOGDIR)/install.out
+	$(BUILD) > $(LOGDIR)/build.out
 
 install: build $(LIBNAME)-src
-	$(INSTALL) > $(LOGDIR)/build.out
+	$(INSTALL) > $(LOGDIR)/install.out
