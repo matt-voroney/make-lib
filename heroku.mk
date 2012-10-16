@@ -61,7 +61,7 @@ $(DEPENDENCIES): libs3 | $(DEPDIR)
 
 # if only the makefile was included, then the sources need to be downloaded.
 $(LIBNAME)-src$(LIB_SRC_SUFFIX):
-	curl -o $@ $(LIB_URL)
+	curl -L -o $@ $(LIB_URL)
 
 # extract one of the various src archive formats we might have downloaded.
 # should just extract the sources into the current directory.
