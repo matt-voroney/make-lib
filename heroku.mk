@@ -1,6 +1,12 @@
 
 ifndef LIBNAME
-$(error "LIBNAME not defined!: Must be set to the name of the library to be built")
+$(error LIBNAME not defined!: Must be set to the name of the library to be built)
+endif
+ifndef LIB_VERSION
+$(error LIB_VERSION not defined!: Must be set to the version of '$(LIBNAME)' that is to be built)
+endif
+ifndef LIB_URL
+$(error LIB_URL not defined!: Must be set to the URL where a source archive of '$(LIBNAME)' version '$(LIB_VERSION)' can be downloaded)
 endif
 
 S3_BUCKET := heroku-binaries
