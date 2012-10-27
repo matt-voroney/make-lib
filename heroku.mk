@@ -17,6 +17,10 @@ INSTALLDIR := /tmp/vendor
 LOGDIR := /tmp/log
 LIB_SRC_SUFFIX ?= $(filter-out $(LIB_URL),$(foreach sfx,.tar.gz .tgz .bz2 .xz,$(patsubst %$(sfx),$(sfx),$(LIB_URL))))
 
+# don't publish if we are only doing a local build.
+#
+phony_targets := depend config build install $(if $(LOCALBUILD),,publish)
+
 export CPATH := $(CPATH):$(DEPDIR)/include
 export LIBRARY_PATH := $(LIBRARY_PATH):$(DEPDIR)/lib
 export LD_RUN_PATH := $(LD_RUN_PATH):$(DEPDIR)/lib
@@ -28,8 +32,7 @@ BUILD ?= $(MAKE)
 INSTALL ?= $(MAKE) install
 
 define extract_src
-	tar -x$(1)f $< -C . --transform 's@^\(./\)\{0,1\}[^/]*$(LIBNAME)[^/]*/@@'
-	echo . > $@
+    tar -x$(1)f $< -C $(2) --transform 's@^\(./\)\{0,1\}[^/]*$(LIBNAME)[^/]*/@@'
 endef
 
 $(info "Build type: $(if $(LOCALBUILD),local,remote)")
@@ -42,26 +45,30 @@ $(info "    LIBRARY_PATH=$(LIBRARY_PATH)")
 $(info "    LD_RUN_PATH=$(LD_RUN_PATH)")
 $(info "    LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)") 
 
-.PHONY: all config install publish $(DEPENDENCIES)
+.PHONY: $(phony_targets) $(DEPENDENCIES)
 .DEFAULT_GOAL = all
 
-# don't publish if we are only doing a local build.
-#
-all: depend config install $(LIBNAME)-build.tgz $(if $(LOCALBUILD),,publish)
-
-depend config build install publish: $(LOGDIR) 
+all: $(phony_targets) $(LIBNAME)-build.tgz
+$(phony_targets): $(LOGDIR) 
 depend: $(DEPDIR)
+
+# add timestamp dependencies for each top level phony target
+#
+$(foreach phony,$(phony_targets),$(eval $(phony): $(LIBNAME).$(phony)))
 
 # use depend as a file of exclusions for packaging.
 #
-depend: $(DEPENDENCIES)
+$(LIBNAME).depend: $(DEPENDENCIES)
 	find $(DEPDIR) > $@
 
 $(DEPDIR):
-	-mkdir $@
+	mkdir $@
 
 $(LOGDIR):
-	-mkdir $@
+	mkdir $@
+
+$(LIBNAME)-src:
+	mkdir $@
 
 $(DEPENDENCIES): | $(DEPDIR)
 	s3 get $(S3_BUCKET)/$@-build.tgz filename=$@.tgz
@@ -76,33 +83,40 @@ $(LIBNAME)-src$(LIB_SRC_SUFFIX):
 # extract one of the various src archive formats we might have downloaded.
 # should just extract the sources into the current directory.
 #
-%-src: %-src.tgz
-	$(call extract_src,z)
+%-src.extract: %-src.tgz %-src
+	$(call extract_src,z,$(word 2,$^))
 
-%-src: %-src.tar.gz
-	$(call extract_src,z)
+%-src.extract: %-src.tar.gz %-src
+	$(call extract_src,z,$(word 2,$^))
 
-%-src: %-src.bz2
-	$(call extract_src,j)
+%-src.extract: %-src.bz2 %-src
+	$(call extract_src,j,$(word 2,$^))
 
-%-src: %-src.xz
-	$(call extract_src,J)
+%-src.extract: %-src.xz %-src
+	$(call extract_src,J$(word 2,$^))
 
-# package all files newer than depend timestamp
+# package all files that are not already part of the dependency packages. 
 #
-$(LIBNAME)-build.tgz : install
-	tar -czf $@ $(INSTALLDIR) -X depend -P --transform 's@$(INSTALLDIR)/@@' > $(LOGDIR)/package.out
+$(LIBNAME)-build.tgz : $(LIBNAME).install
+	tar -czf $@ $(INSTALLDIR) -X $(LIBNAME).depend -P --transform 's@$(INSTALLDIR)/@@' > $(LOGDIR)/package.out
 
-publish: $(LIBNAME)-build.tgz 
+$(LIBNAME).publish: $(LIBNAME)-build.tgz 
 	s3 put $(S3_BUCKET)/$< filename=$< > $(LOGDIR)/publish.out
+	@touch $@
 
 # commands can be overridden by supplying new values for the respective
-# variables.
-config: depend $(LIBNAME)-src
-	$(CONFIGURE) > $(LOGDIR)/configure.out
+# variables: CONFIGURE, BUILD, and INSTALL.
+$(LIBNAME).config: $(LIBNAME)-src $(LIBNAME).depend $(LIBNAME)-src.extract
+	@echo CONFIGURE: $(CONFIGURE) 
+	@cd $< && $(CONFIGURE) > $(LOGDIR)/configure.out
+	@touch $@
 
-build: config $(LIBNAME)-src
-	$(BUILD) > $(LOGDIR)/build.out
+$(LIBNAME).build: $(LIBNAME)-src $(LIBNAME).config $(LIBNAME)-src.extract
+	@echo BUILD: $(BUILD)
+	@cd $< && $(BUILD) > $(LOGDIR)/build.out
+	@touch $@
 
-install: build $(LIBNAME)-src
-	$(INSTALL) > $(LOGDIR)/install.out
+$(LIBNAME).install: $(LIBNAME)-src $(LIBNAME).build $(LIBNAME)-src.extract
+	@echo INSTALL: $(INSTALL)
+	@cd $< && $(INSTALL) > $(LOGDIR)/install.out
+	@touch $@
