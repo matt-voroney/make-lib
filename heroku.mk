@@ -15,6 +15,7 @@ DEPDIR := /tmp/vendor
 PATH := $(PATH):$(DEPDIR)/bin:$(DEPDIR)/sbin
 INSTALLDIR := /tmp/vendor
 LOGDIR := /tmp/log
+BUILDDIR := $(LIBNAME)-src
 LIB_SRC_SUFFIX ?= $(filter-out $(LIB_URL),$(foreach sfx,.tar.gz .tgz .bz2 .xz,$(patsubst %$(sfx),$(sfx),$(LIB_URL))))
 
 # don't publish if we are only doing a local build.
@@ -32,7 +33,8 @@ BUILD ?= $(MAKE)
 INSTALL ?= $(MAKE) install
 
 define extract_src
-    tar -x$(1)f $< -C $(2) --transform 's@^\(./\)\{0,1\}[^/]*$(LIBNAME)[^/]*/@@'
+	tar -x$(1)f $< -C $(2) --transform 's@^\(./\)\{0,1\}[^/]*$(LIBNAME)[^/]*/@@'
+	@touch $@
 endef
 
 $(info "Build type: $(if $(LOCALBUILD),local,remote)")
@@ -67,7 +69,7 @@ $(DEPDIR):
 $(LOGDIR):
 	mkdir $@
 
-$(LIBNAME)-src:
+$(BUILDDIR):
 	mkdir $@
 
 $(DEPENDENCIES): | $(DEPDIR)
@@ -97,26 +99,26 @@ $(LIBNAME)-src$(LIB_SRC_SUFFIX):
 
 # package all files that are not already part of the dependency packages. 
 #
-$(LIBNAME)-build.tgz : $(LIBNAME).install
-	tar -czf $@ $(INSTALLDIR) -X $(LIBNAME).depend -P --transform 's@$(INSTALLDIR)/@@' > $(LOGDIR)/package.out
+%-build.tgz : %.depend %.install
+	tar -czf $@ $(INSTALLDIR) -X $< -P --transform 's@$(INSTALLDIR)/@@' > $(LOGDIR)/package.out
 
-$(LIBNAME).publish: $(LIBNAME)-build.tgz 
+%.publish: %-build.tgz 
 	s3 put $(S3_BUCKET)/$< filename=$< > $(LOGDIR)/publish.out
 	@touch $@
 
 # commands can be overridden by supplying new values for the respective
 # variables: CONFIGURE, BUILD, and INSTALL.
-$(LIBNAME).config: $(LIBNAME)-src $(LIBNAME).depend $(LIBNAME)-src.extract
+%.config: $(BUILDDIR) %.depend %-src.extract
 	@echo CONFIGURE: $(CONFIGURE) 
 	@cd $< && $(CONFIGURE) > $(LOGDIR)/configure.out
 	@touch $@
 
-$(LIBNAME).build: $(LIBNAME)-src $(LIBNAME).config $(LIBNAME)-src.extract
+%.build: $(BUILDDIR) %.config %-src.extract
 	@echo BUILD: $(BUILD)
 	@cd $< && $(BUILD) > $(LOGDIR)/build.out
 	@touch $@
 
-$(LIBNAME).install: $(LIBNAME)-src $(LIBNAME).build $(LIBNAME)-src.extract
+%.install: $(BUILDDIR) %.build %-src.extract
 	@echo INSTALL: $(INSTALL)
 	@cd $< && $(INSTALL) > $(LOGDIR)/install.out
 	@touch $@
