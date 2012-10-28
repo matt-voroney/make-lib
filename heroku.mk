@@ -9,13 +9,14 @@ ifndef LIB_URL
 $(error LIB_URL not defined!: Must be set to the URL where a source archive of '$(LIBNAME)' version '$(LIB_VERSION)' can be downloaded)
 endif
 
-S3_BUCKET := heroku-binaries
+S3_BUCKET ?= heroku-binaries
 PUBLISHURL := https://s3.amazonaws.com/$(S3_BUCKET)
-DEPDIR := /tmp/vendor
 PATH := $(PATH):$(DEPDIR)/bin:$(DEPDIR)/sbin
-INSTALLDIR := /tmp/vendor
-LOGDIR := /tmp/log
-BUILDDIR := $(LIBNAME)-src
+DEPDIR ?= /tmp/vendor
+INSTALLDIR ?= /tmp/vendor
+LOGDIR ?= /tmp/log
+BUILDDIR ?= $(LIBNAME)-src
+DIRECTORIES := $(DIRECTORIES) $(DEPDIR) $(LOGDIR) $(BUILDDIR)
 LIB_SRC_SUFFIX ?= $(filter-out $(LIB_URL),$(foreach sfx,.tar.gz .tgz .bz2 .xz,$(patsubst %$(sfx),$(sfx),$(LIB_URL))))
 
 # map of lifecycle stage to predecessor and command variable. 
@@ -27,6 +28,8 @@ COMPRESSION := tgz:z tar.gz:z bz2:j xz:J
 
 # don't publish if we are only doing a local build.
 phony_targets := depend config build install package $(if $(LOCALBUILD),,publish)
+# build milestone suffixes.
+ms_suffixes := $(patsubst %,.%,$(phony_targets)) -src.extract -build.extract
 
 export CPATH := $(CPATH):$(DEPDIR)/include
 export LIBRARY_PATH := $(LIBRARY_PATH):$(DEPDIR)/lib
@@ -38,32 +41,66 @@ CONFIGURE ?= ./configure --prefix=$(INSTALLDIR)
 BUILD ?= $(MAKE) 
 INSTALL ?= $(MAKE) install
 
+define \n
+
+
+endef
+define \t
+	
+endef
+space :=
+space +=
+expand = $(subst :,$(space),$1)
+
+#
+# formats a multiline command for use in a make recipe. This ensures
+# that each line is properly tabbed, and any required pre and 
+# post-processing steps are performed. Pre and Post can consist of
+# anything that can be legally prepended and appended to each line
+# of the command.
+#
+# $1 - pre-processing step.
+# $2 - command, consisting of one or more lines.
+# $3 - post-processing step.
+#
+define format_cmd
+$(1)$(subst $(\n),$(3)$(\n)$(\t)$(1),$(subst $(\t),,$(2)))$(3)
+endef
+
 define extract_src_t
-%-src.extract: %-src.$(1) $(BUILDDIR)
-	tar -x$(2)f $$< -C $(BUILDDIR) --transform 's@^\(./\)\{0,1\}[^/]*$(LIBNAME)[^/]*/@@'
-	touch $$@
+%-src.extract: %-src.$(1) | $(BUILDDIR)
+	tar -x$(2)f $$< -C $(BUILDDIR) --transform 's@^\(./\)\{0,1\}[^/]*$(*)[^/]*/@@'
+	@touch $$@
 endef
 
 define rule_t
 $(1): $(2)
-	$(3)
+	$(call format_cmd,$(4),$(3),$(5))
 endef
 
+#
+# defines a build stage for milestone based builds.
+#
+# $1 - the milestone/build stage
+# $2 - the predecessor/dependency of $1
+# $3 - the name of a variable containing a command to
+#      be performed for the build stage.
+# $4 - a boolean toggle. If set, each line in $3 will be
+#      run from BUILDDIR
+#
 define build_stage_t
-%.$(1): $(BUILDDIR) %.$(2) %-src.extract
-	@echo $(3): $($(3))
-	@cd $$< && $($(3)) > $(LOGDIR)/$(1).out
-	touch $$@
+%.$(1): %.$(2) %-src.extract | $(BUILDDIR)
+	$(call format_cmd,@echo $(3): ,$($(3)),)
+	@truncate -s 0 $(LOGDIR)/$(1).out
+	$(call format_cmd,@$(if $(4),cd $(BUILDDIR) && ,),$($(3)), >> $(LOGDIR)/$(1).out)
+	@touch $$@
 endef
-
-space :=
-space +=
-expand = $(subst :,$(space),$1)
 
 # TODO: is there really no better way to do this?
 # workaround for the inability to dynamically build parameter lists.
 call2 = $(call $1,$(word 1,$2),$(word 2,$2))
 call3 = $(call $1,$(word 1,$2),$(word 2,$2),$(word 3,$2))
+call4 = $(call $1,$(word 1,$2),$(word 2,$2),$(word 3,$2),$(word 4,$2))
 
 $(info "Build type: $(if $(LOCALBUILD),local,remote)")
 $(info "Library being built: $(LIBNAME)")
@@ -75,6 +112,7 @@ $(info "    LIBRARY_PATH=$(LIBRARY_PATH)")
 $(info "    LD_RUN_PATH=$(LD_RUN_PATH)")
 $(info "    LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)") 
 
+.PRECIOUS: $(patsubst %,\%%,$(ms_suffixes))
 .PHONY: $(phony_targets)
 .DEFAULT_GOAL = all
 
@@ -89,10 +127,10 @@ $(foreach phony,$(phony_targets),$(eval $(phony): $(LIBNAME).$(phony)))
 
 # use depend as a file of exclusions for packaging.
 #
-$(LIBNAME).depend: $(DEPENDENCIES)
+$(LIBNAME).depend: $(patsubst %,%-build.extract,$(DEPENDENCIES))
 	find $(DEPDIR) > $@
 
-$(foreach d,$(DEPDIR) $(LOGDIR) $(BUILDDIR),$(eval $(call rule_t,$(d),,mkdir $$@)))
+$(foreach d,$(DIRECTORIES),$(eval $(call rule_t,$(d),,mkdir $$@)))
 $(foreach dep,$(DEPENDENCIES),$(eval $(dep)-build.extract: $(dep)-build.tgz))
 $(foreach dep,$(DEPENDENCIES),$(eval $(call rule_t,$(dep)-build.tgz,,s3 get $(S3_BUCKET)/$$@ filename=$$@)))
 
@@ -110,8 +148,10 @@ $(LIBNAME)-src$(LIB_SRC_SUFFIX):
 #
 $(foreach fmt,$(COMPRESSION),$(eval $(call call2,extract_src_t,$(call expand,$(fmt)))))
 
+%.package: %-build.tgz ;
 %-build.tgz : %.depend %.install
 	tar -czf $@ $(INSTALLDIR) -X $< -P --transform 's@$(INSTALLDIR)/@@' > $(LOGDIR)/package.out
+	@touch $*.package
 
 %.publish: %-build.tgz 
 	s3 put $(S3_BUCKET)/$< filename=$< > $(LOGDIR)/publish.out
@@ -119,5 +159,5 @@ $(foreach fmt,$(COMPRESSION),$(eval $(call call2,extract_src_t,$(call expand,$(f
 
 # assemble build LIFECYCLE
 #
-$(foreach stage,$(LIFECYCLE),$(eval $(call call3,build_stage_t,$(call expand,$(stage)))))
+$(foreach stage,$(LIFECYCLE),$(eval $(call call4,build_stage_t,$(call expand,$(stage)) cd)))
 
