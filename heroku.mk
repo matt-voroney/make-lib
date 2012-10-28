@@ -18,9 +18,15 @@ LOGDIR := /tmp/log
 BUILDDIR := $(LIBNAME)-src
 LIB_SRC_SUFFIX ?= $(filter-out $(LIB_URL),$(foreach sfx,.tar.gz .tgz .bz2 .xz,$(patsubst %$(sfx),$(sfx),$(LIB_URL))))
 
+# map of lifecycle stage to predecessor and command variable. 
+# i.e. <stage>:<predecessor>:<command>
+LIFECYCLE := config:depend:CONFIGURE build:config:BUILD install:build:INSTALL
+# map of compression formats to tar decompression switch. 
+# i.e. <format>:<switch>
+COMPRESSION := tgz:z tar.gz:z bz2:j xz:J 
+
 # don't publish if we are only doing a local build.
-#
-phony_targets := depend config build install $(if $(LOCALBUILD),,publish)
+phony_targets := depend config build install package $(if $(LOCALBUILD),,publish)
 
 export CPATH := $(CPATH):$(DEPDIR)/include
 export LIBRARY_PATH := $(LIBRARY_PATH):$(DEPDIR)/lib
@@ -32,10 +38,32 @@ CONFIGURE ?= ./configure --prefix=$(INSTALLDIR)
 BUILD ?= $(MAKE) 
 INSTALL ?= $(MAKE) install
 
-define extract_src
-	tar -x$(1)f $< -C $(2) --transform 's@^\(./\)\{0,1\}[^/]*$(LIBNAME)[^/]*/@@'
-	@touch $@
+define extract_src_t
+%-src.extract: %-src.$(1) $(BUILDDIR)
+	tar -x$(2)f $$< -C $(BUILDDIR) --transform 's@^\(./\)\{0,1\}[^/]*$(LIBNAME)[^/]*/@@'
+	touch $$@
 endef
+
+define rule_t
+$(1): $(2)
+	$(3)
+endef
+
+define build_stage_t
+%.$(1): $(BUILDDIR) %.$(2) %-src.extract
+	@echo $(3): $($(3))
+	@cd $$< && $($(3)) > $(LOGDIR)/$(1).out
+	touch $$@
+endef
+
+space :=
+space +=
+expand = $(subst :,$(space),$1)
+
+# TODO: is there really no better way to do this?
+# workaround for the inability to dynamically build parameter lists.
+call2 = $(call $1,$(word 1,$2),$(word 2,$2))
+call3 = $(call $1,$(word 1,$2),$(word 2,$2),$(word 3,$2))
 
 $(info "Build type: $(if $(LOCALBUILD),local,remote)")
 $(info "Library being built: $(LIBNAME)")
@@ -47,12 +75,13 @@ $(info "    LIBRARY_PATH=$(LIBRARY_PATH)")
 $(info "    LD_RUN_PATH=$(LD_RUN_PATH)")
 $(info "    LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)") 
 
-.PHONY: $(phony_targets) $(DEPENDENCIES)
+.PHONY: $(phony_targets)
 .DEFAULT_GOAL = all
 
-all: $(phony_targets) $(LIBNAME)-build.tgz
+all: $(phony_targets)
 $(phony_targets): $(LOGDIR) 
 depend: $(DEPDIR)
+$(LIBNAME).package: $(LIBNAME)-build.tgz
 
 # add timestamp dependencies for each top level phony target
 #
@@ -63,19 +92,13 @@ $(foreach phony,$(phony_targets),$(eval $(phony): $(LIBNAME).$(phony)))
 $(LIBNAME).depend: $(DEPENDENCIES)
 	find $(DEPDIR) > $@
 
-$(DEPDIR):
-	mkdir $@
+$(foreach d,$(DEPDIR) $(LOGDIR) $(BUILDDIR),$(eval $(call rule_t,$(d),,mkdir $$@)))
+$(foreach dep,$(DEPENDENCIES),$(eval $(dep)-build.extract: $(dep)-build.tgz))
+$(foreach dep,$(DEPENDENCIES),$(eval $(call rule_t,$(dep)-build.tgz,,s3 get $(S3_BUCKET)/$$@ filename=$$@)))
 
-$(LOGDIR):
-	mkdir $@
-
-$(BUILDDIR):
-	mkdir $@
-
-$(DEPENDENCIES): | $(DEPDIR)
-	s3 get $(S3_BUCKET)/$@-build.tgz filename=$@.tgz
-	tar -xzf $@.tgz -C $(DEPDIR)
-	rm -f $@.tgz 
+%-build.extract: %-build.tgz
+	tar -xzf $< -C $(DEPDIR)
+	@touch $@
 
 # if only the makefile was included, then the sources need to be downloaded.
 #
@@ -83,22 +106,10 @@ $(LIBNAME)-src$(LIB_SRC_SUFFIX):
 	curl -L -o $@ $(LIB_URL)
 
 # extract one of the various src archive formats we might have downloaded.
-# should just extract the sources into the current directory.
+# should just extract the sources into the BUILDDIR.
 #
-%-src.extract: %-src.tgz %-src
-	$(call extract_src,z,$(word 2,$^))
+$(foreach fmt,$(COMPRESSION),$(eval $(call call2,extract_src_t,$(call expand,$(fmt)))))
 
-%-src.extract: %-src.tar.gz %-src
-	$(call extract_src,z,$(word 2,$^))
-
-%-src.extract: %-src.bz2 %-src
-	$(call extract_src,j,$(word 2,$^))
-
-%-src.extract: %-src.xz %-src
-	$(call extract_src,J$(word 2,$^))
-
-# package all files that are not already part of the dependency packages. 
-#
 %-build.tgz : %.depend %.install
 	tar -czf $@ $(INSTALLDIR) -X $< -P --transform 's@$(INSTALLDIR)/@@' > $(LOGDIR)/package.out
 
@@ -106,19 +117,7 @@ $(LIBNAME)-src$(LIB_SRC_SUFFIX):
 	s3 put $(S3_BUCKET)/$< filename=$< > $(LOGDIR)/publish.out
 	@touch $@
 
-# commands can be overridden by supplying new values for the respective
-# variables: CONFIGURE, BUILD, and INSTALL.
-%.config: $(BUILDDIR) %.depend %-src.extract
-	@echo CONFIGURE: $(CONFIGURE) 
-	@cd $< && $(CONFIGURE) > $(LOGDIR)/configure.out
-	@touch $@
+# assemble build LIFECYCLE
+#
+$(foreach stage,$(LIFECYCLE),$(eval $(call call3,build_stage_t,$(call expand,$(stage)))))
 
-%.build: $(BUILDDIR) %.config %-src.extract
-	@echo BUILD: $(BUILD)
-	@cd $< && $(BUILD) > $(LOGDIR)/build.out
-	@touch $@
-
-%.install: $(BUILDDIR) %.build %-src.extract
-	@echo INSTALL: $(INSTALL)
-	@cd $< && $(INSTALL) > $(LOGDIR)/install.out
-	@touch $@
