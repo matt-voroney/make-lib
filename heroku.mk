@@ -128,7 +128,7 @@ $(foreach phony,$(phony_targets),$(eval $(phony): $(LIBNAME).$(phony)))
 # use depend as a file of exclusions for packaging.
 #
 $(LIBNAME).depend: $(patsubst %,%-build.extract,$(DEPENDENCIES))
-	find $(DEPDIR) > $@
+	find $(DEPDIR) ! -type d | sed 's@^$(DEPDIR)/\{0,1\}@\*@' > $@
 
 $(foreach d,$(DIRECTORIES),$(eval $(call rule_t,$(d),,mkdir $$@)))
 $(foreach dep,$(DEPENDENCIES),$(eval $(dep)-build.extract: $(dep)-build.tgz))
@@ -150,7 +150,7 @@ $(foreach fmt,$(COMPRESSION),$(eval $(call call2,extract_src_t,$(call expand,$(f
 
 %.package: %-build.tgz ;
 %-build.tgz : %.depend %.install
-	tar -czf $@ $(INSTALLDIR) -X $< -P --transform 's@$(INSTALLDIR)/@@' > $(LOGDIR)/package.out
+	tar -czf $@ $(INSTALLDIR)/* -X $< -P --transform 's@$(INSTALLDIR)/@@' > $(LOGDIR)/package.out
 	@touch $*.package
 
 %.publish: %-build.tgz 
@@ -160,4 +160,7 @@ $(foreach fmt,$(COMPRESSION),$(eval $(call call2,extract_src_t,$(call expand,$(f
 # assemble build LIFECYCLE
 #
 $(foreach stage,$(LIFECYCLE),$(eval $(call call4,build_stage_t,$(call expand,$(stage)) cd)))
+
+$(LIBNAME)-clean:
+	rm -rf $(patsubst %,$(LIBNAME)%,$(ms_suffixes)) $(LIBNAME)-src* $(LIBNAME)-build* $(LIBNAME)*tgz $(DEPDIR)
 
