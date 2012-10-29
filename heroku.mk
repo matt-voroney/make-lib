@@ -16,7 +16,8 @@ DEPDIR ?= /tmp/vendor
 INSTALLDIR ?= /tmp/vendor
 LOGDIR ?= /tmp/log
 BUILDDIR ?= $(LIBNAME)-src
-DIRECTORIES := $(DIRECTORIES) $(DEPDIR) $(LOGDIR) $(BUILDDIR)
+MSDIR ?= .milestones
+DIRECTORIES := $(DIRECTORIES) $(DEPDIR) $(LOGDIR) $(BUILDDIR) $(MSDIR)
 LIB_SRC_SUFFIX ?= $(filter-out $(LIB_URL),$(foreach sfx,.tar.gz .tgz .bz2 .xz,$(patsubst %$(sfx),$(sfx),$(LIB_URL))))
 
 # map of lifecycle stage to predecessor and command variable. 
@@ -68,7 +69,7 @@ $(1)$(subst $(\n),$(3)$(\n)$(\t)$(1),$(subst $(\t),,$(2)))$(3)
 endef
 
 define extract_src_t
-%-src.extract: %-src.$(1) | $(BUILDDIR)
+$(MSDIR)/%-src.extract: %-src.$(1) | $(BUILDDIR)
 	tar -x$(2)f $$< -C $(BUILDDIR) --transform 's@^\(./\)\{0,1\}[^/]*$(*)[^/]*/@@'
 	@touch $$@
 endef
@@ -112,29 +113,35 @@ $(info "    LIBRARY_PATH=$(LIBRARY_PATH)")
 $(info "    LD_RUN_PATH=$(LD_RUN_PATH)")
 $(info "    LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)") 
 
-.PRECIOUS: $(patsubst %,\%%,$(ms_suffixes))
+ms_patterns := $(patsubst %,\%%,$(ms_suffixes))
+
+$(foreach pat,$(ms_patterns),$(eval vpath $(pat) $(MSDIR)))
+
+$(info ms_patterns = $(ms_patterns))
+.PRECIOUS: $(patsubst %,$(MSDIR)/%,$(ms_patterns))
+.SECONDARY: $(LIBNAME)-build.tgz $(LIBNAME)-src.tgz
 .PHONY: $(phony_targets)
 .DEFAULT_GOAL = all
 
 all: $(phony_targets)
-$(phony_targets): $(LOGDIR) 
+$(phony_targets): $(LOGDIR) $(MSDIR) 
 depend: $(DEPDIR)
-$(LIBNAME).package: $(LIBNAME)-build.tgz
+#$(LIBNAME).package: $(LIBNAME)-build.tgz
 
 # add timestamp dependencies for each top level phony target
 #
-$(foreach phony,$(phony_targets),$(eval $(phony): $(LIBNAME).$(phony)))
+$(foreach phony,$(phony_targets),$(eval $(phony): $(MSDIR)/$(LIBNAME).$(phony)))
 
 # use depend as a file of exclusions for packaging.
 #
-$(LIBNAME).depend: $(patsubst %,%-build.extract,$(DEPENDENCIES))
+$(MSDIR)/$(LIBNAME).depend: $(patsubst %,%-build.extract,$(DEPENDENCIES))
 	find $(DEPDIR) ! -type d | sed 's@^$(DEPDIR)/\{0,1\}@\*@' > $@
 
 $(foreach d,$(DIRECTORIES),$(eval $(call rule_t,$(d),,mkdir $$@)))
-$(foreach dep,$(DEPENDENCIES),$(eval $(dep)-build.extract: $(dep)-build.tgz))
+$(foreach dep,$(DEPENDENCIES),$(eval $(MSDIR)/$(dep)-build.extract: $(dep)-build.tgz))
 $(foreach dep,$(DEPENDENCIES),$(eval $(call rule_t,$(dep)-build.tgz,,s3 get $(S3_BUCKET)/$$@ filename=$$@)))
 
-%-build.extract: %-build.tgz
+$(MSDIR)/%-build.extract: %-build.tgz
 	tar -xzf $< -C $(DEPDIR)
 	@touch $@
 
@@ -148,12 +155,13 @@ $(LIBNAME)-src$(LIB_SRC_SUFFIX):
 #
 $(foreach fmt,$(COMPRESSION),$(eval $(call call2,extract_src_t,$(call expand,$(fmt)))))
 
-%.package: %-build.tgz ;
+$(MSDIR)/%.package: %-build.tgz
+	@touch $@
+
 %-build.tgz : %.depend %.install
 	tar -czf $@ $(INSTALLDIR)/* -X $< -P --transform 's@$(INSTALLDIR)/@@' > $(LOGDIR)/package.out
-	@touch $*.package
 
-%.publish: %-build.tgz 
+$(MSDIR)/%.publish: %-build.tgz %.package 
 	s3 put $(S3_BUCKET)/$< filename=$< > $(LOGDIR)/publish.out
 	@touch $@
 
@@ -162,5 +170,5 @@ $(foreach fmt,$(COMPRESSION),$(eval $(call call2,extract_src_t,$(call expand,$(f
 $(foreach stage,$(LIFECYCLE),$(eval $(call call4,build_stage_t,$(call expand,$(stage)) cd)))
 
 $(LIBNAME)-clean:
-	rm -rf $(patsubst %,$(LIBNAME)%,$(ms_suffixes)) $(LIBNAME)-src* $(LIBNAME)-build* $(LIBNAME)*tgz $(DEPDIR)
+	rm -rf $(patsubst %,$(MSDIR)/$(LIBNAME)%,$(ms_suffixes)) $(LIBNAME)-src* $(LIBNAME)*tgz $(DEPDIR)
 
