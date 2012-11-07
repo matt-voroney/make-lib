@@ -62,8 +62,8 @@ define build_stage_t
 $(if $(MSDIR),,$(error MSDIR was not defined. no place to put milestones))
 $(MSDIR)/$(1): $(2) | $(MSDIR) $(4) $(5)
 	$(call format_cmd,@echo $(3): ,$(value $(3)),)
-	@truncate -s 0 -c $(5)/$(1).out
-	$(call format_cmd,@$(if $(4),cd $(4) && ,),$(value $(3)),$(if $(5), >> $(5)/$(1).out,))
+	@truncate -s 0 -c $(5)/$$(@F).out
+	$(call format_cmd,@$(if $(4),cd $(4) && ,),$(value $(3)),$(if $(5), >> $(5)/$$(@F).out,))
 	@touch $$@
 endef
 
